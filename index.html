@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recursive Backtracking Maze Generator</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  canvas { display: block; image-rendering: pixelated; }
+  input[type=range] { accent-color: #34d399; }
+</style>
+</head>
+<body class="bg-gray-950 text-white min-h-screen flex flex-col items-center py-6 px-4">
+<h1 class="text-3xl font-bold mb-2 text-emerald-400">🧩 Maze Generator</h1>
+<p class="text-gray-400 mb-4 text-center max-w-md">Recursive backtracking maze generation with DFS solve animation.</p>
+
+<div class="w-full max-w-3xl flex flex-col lg:flex-row gap-4 items-start justify-center">
+  <!-- Canvas -->
+  <div class="flex flex-col items-center gap-2">
+    <canvas id="mazeCanvas" width="540" height="540"
+      class="rounded-2xl shadow-2xl border border-gray-700"
+      role="img" aria-label="Maze canvas"></canvas>
+    <div class="flex gap-2 flex-wrap justify-center">
+      <button onclick="startGenerate()" id="gen-btn" class="bg-emerald-700 hover:bg-emerald-600 font-bold py-2 px-4 rounded-lg transition-colors">
+        Generate
+      </button>
+      <button onclick="solveMaze()" id="solve-btn" class="bg-blue-700 hover:bg-blue-600 font-bold py-2 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+        Solve
+      </button>
+      <button onclick="stopAll()" class="bg-gray-700 hover:bg-gray-600 font-bold py-2 px-4 rounded-lg transition-colors">
+        Stop
+      </button>
+    </div>
+    <div id="status-bar" class="text-sm text-gray-400" aria-live="polite">Ready</div>
+  </div>
+
+  <!-- Controls -->
+  <div class="bg-gray-900 rounded-2xl p-5 shadow-xl w-full lg:w-60 space-y-4">
+    <!-- Grid size -->
+    <div>
+      <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Grid Size</div>
+      <div class="flex gap-2 flex-wrap">
+        <button onclick="setSize(10)" class="size-btn text-xs bg-gray-700 hover:bg-gray-600 py-1 px-3 rounded transition-colors" data-size="10">10×10</button>
+        <button onclick="setSize(20)" class="size-btn text-xs bg-emerald-700 hover:bg-emerald-600 py-1 px-3 rounded transition-colors" data-size="20">20×20</button>
+        <button onclick="setSize(30)" class="size-btn text-xs bg-gray-700 hover:bg-gray-600 py-1 px-3 rounded transition-colors" data-size="30">30×30</button>
+      </div>
+    </div>
+
+    <!-- Speed -->
+    <div>
+      <label for="speed-slider" class="block text-sm font-semibold text-gray-300 mb-1">Gen Speed: <span id="speed-disp">Medium</span></label>
+      <input type="range" id="speed-slider" min="1" max="5" step="1" value="3" class="w-full" aria-label="Generation speed">
+    </div>
+
+    <!-- Theme -->
+    <div>
+      <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Color Theme</div>
+      <div class="flex flex-col gap-1">
+        <button onclick="setTheme('dark', this)" class="theme-btn text-xs bg-gray-700 hover:bg-gray-600 py-1 px-3 rounded transition-colors text-left">Dark</button>
+        <button onclick="setTheme('forest', this)" class="theme-btn text-xs bg-gray-700 hover:bg-gray-600 py-1 px-3 rounded transition-colors text-left">Forest</button>
+        <button onclick="setTheme('ocean', this)" class="theme-btn text-xs bg-gray-700 hover:bg-gray-600 py-1 px-3 rounded transition-colors text-left">Ocean</button>
+        <button onclick="setTheme('fire', this)" class="theme-btn text-xs bg-gray-700 hover:bg-gray-600 py-1 px-3 rounded transition-colors text-left">Fire</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+const canvas = document.getElementById('mazeCanvas');
+const ctx = canvas.getContext('2d');
+const CANVAS_SIZE = 540;
+
+const THEMES = {
+  dark:   { bg: '#111827', wall: '#4b5563', path: '#1f2937', current: '#fbbf24', solve: '#3b82f6', start: '#22c55e', end: '#ef4444' },
+  forest: { bg: '#14532d', wall: '#052e16', path: '#166534', current: '#fde047', solve: '#86efac', start: '#bbf7d0', end: '#ef4444' },
+  ocean:  { bg: '#0c4a6e', wall: '#082f49', path: '#0369a1', current: '#fde68a', solve: '#7dd3fc', start: '#bae6fd', end: '#f43f5e' },
+  fire:   { bg: '#431407', wall: '#1c0a00', path: '#7c2d12', current: '#fde68a', solve: '#fb923c', start: '#fed7aa', end: '#fbbf24' },
+};
+
+let COLS = 20;
+let ROWS = 20;
+let CELL_SIZE;
+let maze = [];
+let theme = THEMES.dark;
+let animHandle = null;
+let genDone = false;
+
+// Cell flags: bit 0=right wall removed, bit 1=bottom wall removed, bit 2=visited
+const RIGHT = 1;
+const BOTTOM = 2;
+const VISITED = 4;
+
+function initMaze() {
+  CELL_SIZE = Math.floor(CANVAS_SIZE / COLS);
+  maze = new Array(ROWS * COLS).fill(0);
+}
+
+function idx(r, c) { return r * COLS + c; }
+
+function drawCell(r, c, fillColor) {
+  const x = c * CELL_SIZE;
+  const y = r * CELL_SIZE;
+  ctx.fillStyle = fillColor;
+  ctx.fillRect(x + 1, y + 1, CELL_SIZE - 1, CELL_SIZE - 1);
+}
+
+function drawWalls(r, c) {
+  const x = c * CELL_SIZE;
+  const y = r * CELL_SIZE;
+  const cell = maze[idx(r, c)];
+  ctx.strokeStyle = theme.wall;
+  ctx.lineWidth = 2;
+
+  // Right wall
+  if (!(cell & RIGHT) && c < COLS - 1) {
+    ctx.beginPath();
+    ctx.moveTo(x + CELL_SIZE, y);
+    ctx.lineTo(x + CELL_SIZE, y + CELL_SIZE);
+    ctx.stroke();
+  }
+  // Bottom wall
+  if (!(cell & BOTTOM) && r < ROWS - 1) {
+    ctx.beginPath();
+    ctx.moveTo(x, y + CELL_SIZE);
+    ctx.lineTo(x + CELL_SIZE, y + CELL_SIZE);
+    ctx.stroke();
+  }
+}
+
+function redrawFull() {
+  ctx.fillStyle = theme.bg;
+  ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+  // Draw outer border
+  ctx.strokeStyle = theme.wall;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(1, 1, COLS * CELL_SIZE - 2, ROWS * CELL_SIZE - 2);
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (maze[idx(r, c)] & VISITED) {
+        drawCell(r, c, theme.path);
+      }
+      drawWalls(r, c);
+    }
+  }
+
+  // Start/end markers
+  drawCell(0, 0, theme.start);
+  drawCell(ROWS - 1, COLS - 1, theme.end);
+}
+
+const speedLabels = ['Very Slow', 'Slow', 'Medium', 'Fast', 'Instant'];
+const speedDelays = [100, 30, 8, 1, 0];
+
+function getSpeed() {
+  return parseInt(document.getElementById('speed-slider').value);
+}
+
+function startGenerate() {
+  stopAll();
+  initMaze();
+  genDone = false;
+  document.getElementById('status-bar').textContent = 'Generating…';
+  document.getElementById('solve-btn').disabled = true;
+
+  ctx.fillStyle = theme.bg;
+  ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+  const stack = [];
+  const startR = 0, startC = 0;
+  maze[idx(startR, startC)] |= VISITED;
+  stack.push([startR, startC]);
+
+  const speedLevel = getSpeed();
+  const delay = speedDelays[speedLevel - 1];
+
+  if (delay === 0) {
+    // Instant mode: run all at once
+    while (stack.length > 0) {
+      const [r, c] = stack[stack.length - 1];
+      const neighbors = getUnvisitedNeighbors(r, c);
+      if (neighbors.length === 0) {
+        stack.pop();
+      } else {
+        const [nr, nc, dir] = neighbors[Math.floor(Math.random() * neighbors.length)];
+        removeWall(r, c, nr, nc, dir);
+        maze[idx(nr, nc)] |= VISITED;
+        stack.push([nr, nc]);
+      }
+    }
+    redrawFull();
+    finishGenerate();
+    return;
+  }
+
+  function step() {
+    const batchSize = speedLevel >= 4 ? 10 : 1;
+    let done = false;
+    for (let b = 0; b < batchSize && stack.length > 0; b++) {
+      const [r, c] = stack[stack.length - 1];
+      const neighbors = getUnvisitedNeighbors(r, c);
+      if (neighbors.length === 0) {
+        stack.pop();
+      } else {
+        const [nr, nc, dir] = neighbors[Math.floor(Math.random() * neighbors.length)];
+        removeWall(r, c, nr, nc, dir);
+        maze[idx(nr, nc)] |= VISITED;
+        stack.push([nr, nc]);
+      }
+      if (stack.length === 0) done = true;
+    }
+
+    // Partial redraw: just redraw current cell area
+    const [cr, cc] = stack.length > 0 ? stack[stack.length - 1] : [0, 0];
+    redrawFull();
+    if (stack.length > 0) {
+      drawCell(cr, cc, theme.current);
+    }
+
+    if (done || stack.length === 0) {
+      redrawFull();
+      finishGenerate();
+    } else {
+      animHandle = setTimeout(step, delay);
+    }
+  }
+  step();
+}
+
+function finishGenerate() {
+  genDone = true;
+  document.getElementById('status-bar').textContent = 'Done! Click Solve to find the path.';
+  document.getElementById('solve-btn').disabled = false;
+}
+
+function getUnvisitedNeighbors(r, c) {
+  const dirs = [];
+  if (r > 0 && !(maze[idx(r-1, c)] & VISITED)) dirs.push([r-1, c, 'up']);
+  if (r < ROWS-1 && !(maze[idx(r+1, c)] & VISITED)) dirs.push([r+1, c, 'down']);
+  if (c > 0 && !(maze[idx(r, c-1)] & VISITED)) dirs.push([r, c-1, 'left']);
+  if (c < COLS-1 && !(maze[idx(r, c+1)] & VISITED)) dirs.push([r, c+1, 'right']);
+  return dirs;
+}
+
+function removeWall(r1, c1, r2, c2, dir) {
+  if (dir === 'right') maze[idx(r1, c1)] |= RIGHT;
+  else if (dir === 'down') maze[idx(r1, c1)] |= BOTTOM;
+  else if (dir === 'left') maze[idx(r2, c2)] |= RIGHT;
+  else if (dir === 'up') maze[idx(r2, c2)] |= BOTTOM;
+}
+
+function canMove(r1, c1, r2, c2) {
+  if (r2 === r1 && c2 === c1 + 1) return !!(maze[idx(r1, c1)] & RIGHT);
+  if (r2 === r1 && c2 === c1 - 1) return !!(maze[idx(r2, c2)] & RIGHT);
+  if (r2 === r1 + 1 && c2 === c1) return !!(maze[idx(r1, c1)] & BOTTOM);
+  if (r2 === r1 - 1 && c2 === c1) return !!(maze[idx(r2, c2)] & BOTTOM);
+  return false;
+}
+
+function solveMaze() {
+  if (!genDone) return;
+  stopAll();
+  document.getElementById('status-bar').textContent = 'Solving…';
+
+  const visited2 = new Array(ROWS * COLS).fill(false);
+  const parent = new Array(ROWS * COLS).fill(-1);
+  visited2[idx(0, 0)] = true;
+  let found = false;
+  let solveSteps = [];
+
+  // BFS for guaranteed shortest path
+  const queue = [[0, 0]];
+  while (queue.length > 0) {
+    const [r, c] = queue.shift();
+    if (r === ROWS - 1 && c === COLS - 1) { found = true; break; }
+    const nbrs = [[r-1,c],[r+1,c],[r,c-1],[r,c+1]];
+    for (const [nr, nc] of nbrs) {
+      if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+      if (visited2[idx(nr, nc)]) continue;
+      if (!canMove(r, c, nr, nc)) continue;
+      visited2[idx(nr, nc)] = true;
+      parent[idx(nr, nc)] = idx(r, c);
+      queue.push([nr, nc]);
+      solveSteps.push([nr, nc]);
+    }
+  }
+
+  // Trace back path
+  let path = [];
+  if (found) {
+    let cur = idx(ROWS-1, COLS-1);
+    while (cur !== -1) {
+      path.push([Math.floor(cur / COLS), cur % COLS]);
+      cur = parent[cur];
+    }
+    path.reverse();
+  }
+
+  // Animate BFS exploration then path
+  let si = 0;
+  function animateExplore() {
+    const batch = 3;
+    for (let b = 0; b < batch && si < solveSteps.length; b++, si++) {
+      const [r, c] = solveSteps[si];
+      drawCell(r, c, '#1e3a5f');
+    }
+    if (si < solveSteps.length) {
+      animHandle = setTimeout(animateExplore, 4);
+    } else {
+      animatePath(path, 0);
+    }
+  }
+
+  function animatePath(path, pi) {
+    if (pi >= path.length) {
+      document.getElementById('status-bar').textContent = `Solved! Path length: ${path.length} cells`;
+      return;
+    }
+    const [r, c] = path[pi];
+    drawCell(r, c, theme.solve);
+    animHandle = setTimeout(() => animatePath(path, pi + 1), 20);
+  }
+
+  drawCell(0, 0, theme.start);
+  drawCell(ROWS-1, COLS-1, theme.end);
+  animateExplore();
+}
+
+function stopAll() {
+  clearTimeout(animHandle);
+  cancelAnimationFrame(animHandle);
+}
+
+function setSize(n) {
+  COLS = n; ROWS = n;
+  document.querySelectorAll('.size-btn').forEach(btn => {
+    if (parseInt(btn.getAttribute('data-size')) === n) {
+      btn.classList.add('bg-emerald-700');
+      btn.classList.remove('bg-gray-700');
+    } else {
+      btn.classList.remove('bg-emerald-700');
+      btn.classList.add('bg-gray-700');
+    }
+  });
+  startGenerate();
+}
+
+function setTheme(name, btn) {
+  theme = THEMES[name];
+  document.querySelectorAll('.theme-btn').forEach(b => {
+    b.classList.remove('bg-emerald-700');
+    b.classList.add('bg-gray-700');
+  });
+  btn.classList.remove('bg-gray-700');
+  btn.classList.add('bg-emerald-700');
+  if (genDone) redrawFull();
+}
+
+document.getElementById('speed-slider').addEventListener('input', e => {
+  document.getElementById('speed-disp').textContent = speedLabels[parseInt(e.target.value) - 1];
+});
+
+startGenerate();
+</script>
+</body>
+</html>
